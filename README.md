@@ -66,6 +66,7 @@ Usage
 3. Choose options:
    - Dry Run (recommended for first use)
    - Move unused clips to a folder or delete to Recycle Bin
+   - Select which unused file types you want to remove (video, audio, images, or other)
 4. Click "Scan & Clean Unused Media" to start.
 5. After processing, review the summary of files moved/deleted by type in the log window.
 

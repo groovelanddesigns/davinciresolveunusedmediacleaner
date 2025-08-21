@@ -10,10 +10,10 @@ Changelog
 -----
 
 v1.1
-- Added summary of deleted/moved files by type (video, audio, image, other) in the log window.
-- Improved file type filtering and logging.
-- Clarified that the script works only with DaVinci Resolve Studio (paid version).
-- Minor GUI improvements and bug fixes.
+– Improved file type filtering (video, audio, image, other) and logging.
+– Added summary of deleted/moved files by type in the log window.
+– Clarified that the script works only with DaVinci Resolve Studio (paid version).
+– Minor GUI improvements and bug fixes.
 
 v1.0
 - Initial release: scan timelines, detect unused media, move or delete unused clips, remove missing/offline clips, dry run mode.

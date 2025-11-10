@@ -27,7 +27,7 @@ from tkinter import (
     Label, Entry, messagebox, Radiobutton, DISABLED, NORMAL
 )
 
-APP_VERSION = "1.2"
+APP_VERSION = "1.2.0"
 GITHUB_API_LATEST = "https://api.github.com/repos/groovelanddesigns/davinciresolveunusedmediacleaner/releases/latest"
 
 # Optional: Resolve scripting module path if running standalone outside Resolve menu
@@ -592,3 +592,4 @@ if __name__ == "__main__":
     app = UnusedMediaCleanerGUI(root)
     app._toggle_folder_entry()
     root.mainloop()
+

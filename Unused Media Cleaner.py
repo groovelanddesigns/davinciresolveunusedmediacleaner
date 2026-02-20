@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-DaVinci Resolve Unused Media Cleaner (Windows-only, no external deps)
-Version 1.2
+DaVinci Resolve Unused Media Cleaner (Cross-Platform: Windows & macOS, no external deps)
+Version 2.0
 - Scans timelines to find used file paths
 - Compares against Media Pool to find unused clips
-- Option to Move unused files to named folder OR send to Recycle Bin (Windows Shell API)
+- Option to Move unused files to named folder OR send to Trash/Recycle Bin natively
 - Removes corresponding clips from Media Pool; also removes missing/offline clips
 - Dry Run mode (no changes)
 - Checks scripting preferences before connecting
@@ -17,32 +17,51 @@ import os
 import sys
 import shutil
 import threading
-import ctypes
+import subprocess
 import urllib.request
+import urllib.error
 import json
-from ctypes.wintypes import HWND, LPCWSTR, UINT
+import ssl
 import tkinter as tk
 from tkinter import (
     Tk, Button, Checkbutton, IntVar, Text, Scrollbar, END,
     Label, Entry, messagebox, Radiobutton, DISABLED, NORMAL
 )
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "2.0.0"
 GITHUB_API_LATEST = "https://api.github.com/repos/groovelanddesigns/davinciresolveunusedmediacleaner/releases/latest"
 
-# Optional: Resolve scripting module path if running standalone outside Resolve menu
-RESOLVE_MODULE_PATH = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules"
-if RESOLVE_MODULE_PATH not in sys.path and os.path.isdir(RESOLVE_MODULE_PATH):
+# OS Detection
+IS_WINDOWS = sys.platform.startswith('win')
+IS_MAC = sys.platform.startswith('darwin')
+
+# Dynamic UI & Paths based on OS
+if IS_WINDOWS:
+    TRASH_NAME = "Recycle Bin"
+    RESOLVE_MODULE_PATH = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules"
+    import ctypes
+    from ctypes.wintypes import HWND, LPCWSTR, UINT
+elif IS_MAC:
+    TRASH_NAME = "Trash"
+    RESOLVE_MODULE_PATH = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting/Modules"
+else:
+    TRASH_NAME = "Trash"
+    RESOLVE_MODULE_PATH = "" # Linux fallback if needed
+
+if RESOLVE_MODULE_PATH and RESOLVE_MODULE_PATH not in sys.path and os.path.isdir(RESOLVE_MODULE_PATH):
     sys.path.append(RESOLVE_MODULE_PATH)
 
 try:
     import DaVinciResolveScript
 except Exception:
-    print("ERROR: Could not import DaVinciResolveScript. Check scripting module path.")
+    print("ERROR: Could not import DaVinciResolveScript. Check scripting module path or ensure Resolve is installed.")
     sys.exit(1)
 
 
+# --- OS-Specific Trash Implementations ---
+
 def move_to_recycle_bin_win(path: str) -> tuple[bool, str]:
+    if not IS_WINDOWS: return False, "Not Windows"
     class SHFILEOPSTRUCT(ctypes.Structure):
         _fields_ = [
             ("hwnd", HWND),
@@ -72,16 +91,41 @@ def move_to_recycle_bin_win(path: str) -> tuple[bool, str]:
     ret = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
     return (ret == 0, "" if ret == 0 else f"SHFileOperationW returned code {ret}")
 
+def move_to_trash_mac(path: str) -> tuple[bool, str]:
+    if not IS_MAC: return False, "Not macOS"
+    try:
+        abs_path = os.path.abspath(path)
+        escaped_path = abs_path.replace('\\', '\\\\').replace('"', '\\"')
+        script = f'tell application "Finder" to move POSIX file "{escaped_path}" to trash'
+        result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
+        if result.returncode == 0:
+            return True, ""
+        else:
+            return False, result.stderr.strip() or "Unknown AppleScript error"
+    except Exception as e:
+        return False, str(e)
+
+def send_to_trash(path: str) -> tuple[bool, str]:
+    """Router function to send to the correct native trash."""
+    if IS_WINDOWS:
+        return move_to_recycle_bin_win(path)
+    elif IS_MAC:
+        return move_to_trash_mac(path)
+    else:
+        return False, "Unsupported OS for native trash implementation."
+
+
+# --- Main Application ---
 
 class UnusedMediaCleanerGUI:
     def __init__(self, root: Tk):
         self.root = root
-        root.title("DaVinci Resolve Unused Media Cleaner (Windows)")
-        root.geometry("980x780")
+        self.root.title("DaVinci Resolve Unused Media Cleaner")
+        self.root.geometry("980x780")
 
         # Options
         self.dry_run_var = IntVar(value=0)
-        self.action_var = IntVar(value=2)  # 1=Move, 2=Recycle Bin
+        self.action_var = IntVar(value=2)  # 1=Move, 2=Trash
 
         Label(root, text="Options:").pack(anchor='w', padx=10, pady=(10, 5))
         Checkbutton(root, text="Dry Run (no move/delete or Media Pool removal)", variable=self.dry_run_var)\
@@ -90,7 +134,7 @@ class UnusedMediaCleanerGUI:
         Label(root, text="Action for unused media:").pack(anchor='w', padx=10, pady=(12, 0))
         Radiobutton(root, text="Move to folder", variable=self.action_var, value=1,
                     command=self._toggle_folder_entry).pack(anchor='w', padx=20)
-        Radiobutton(root, text="Delete to Recycle Bin (Windows)", variable=self.action_var, value=2,
+        Radiobutton(root, text=f"Delete to {TRASH_NAME}", variable=self.action_var, value=2,
                     command=self._toggle_folder_entry).pack(anchor='w', padx=20)
 
         row = tk.Frame(root)
@@ -124,6 +168,7 @@ class UnusedMediaCleanerGUI:
         footer = tk.Frame(root)
         footer.pack(side='bottom', fill='x', padx=10, pady=8)
         Button(footer, text="Check for Updates", command=self.check_for_updates).pack(side='left')
+        
         # version label bottom-right
         ver_label = Label(footer, text=f"v{APP_VERSION}", anchor='e', fg='gray')
         ver_label.pack(side='right')
@@ -149,7 +194,6 @@ class UnusedMediaCleanerGUI:
         self.log_text.delete('1.0', END)
         threading.Thread(target=self.scan_and_clean, daemon=True).start()
 
-    # helper: collect file paths from timeline (recursively where accessible)
     def _collect_filepaths_from_timeline(self, timeline, out_set, depth=0):
         if not timeline or depth > 8:
             return
@@ -204,7 +248,6 @@ class UnusedMediaCleanerGUI:
                         if inner:
                             self._collect_filepaths_from_timeline(inner, out_set, depth + 1)
 
-    # discover compound children best-effort (fallback; main protection is usage>0)
     def _discover_compound_children(self, mpi):
         found = set()
         for attr in ("GetTimeline", "GetSourceTimeline"):
@@ -218,7 +261,6 @@ class UnusedMediaCleanerGUI:
                     self._collect_filepaths_from_timeline(tl, found)
             except Exception:
                 pass
-        # try properties like Children/ChildClips
         try:
             for prop in ("Children", "ChildClips", "Clips"):
                 try:
@@ -245,7 +287,6 @@ class UnusedMediaCleanerGUI:
                             pass
         except Exception:
             pass
-        # try metadata
         try:
             if hasattr(mpi, "GetMetadata"):
                 md = mpi.GetMetadata() or {}
@@ -256,7 +297,6 @@ class UnusedMediaCleanerGUI:
             pass
         return found
 
-    # find MediaPool item by name (fallback)
     def _find_media_pool_item_by_name(self, name):
         if not self.media_pool:
             return None
@@ -311,7 +351,6 @@ class UnusedMediaCleanerGUI:
             self.media_pool = self.project.GetMediaPool()
             root_folder = self.media_pool.GetRootFolder()
 
-            # gather file-based clips
             all_file_clips = []
             def gather_file_clips(folder):
                 clips = folder.GetClips() or {}
@@ -335,7 +374,6 @@ class UnusedMediaCleanerGUI:
             self.log(f"INFO: Current project: {self.project.GetName()}")
             self.log(f"INFO: Total eligible clips in Media Pool: {len(all_file_clips)}")
 
-            # collect used paths from timelines
             used_paths = set()
             idx = 1
             while True:
@@ -349,7 +387,6 @@ class UnusedMediaCleanerGUI:
                 self._collect_filepaths_from_timeline(tl, used_paths)
                 idx += 1
 
-            # usage-based protection
             usage_protected = set()
             for clip in all_file_clips:
                 try:
@@ -367,7 +404,6 @@ class UnusedMediaCleanerGUI:
                 used_paths.update(usage_protected)
                 self.log(f"INFO: Protected {len(usage_protected)} clips (Usage > 0).")
 
-            # attempt best-effort compound inspection (fallback)
             def protect_from_compounds(folder):
                 clips = folder.GetClips() or {}
                 for _, c in clips.items():
@@ -393,7 +429,6 @@ class UnusedMediaCleanerGUI:
 
             self.log(f"INFO: Total used clip file paths (including Usage & compound discovery): {len(used_paths)}")
 
-            # type filters and final candidates
             final_candidates = []
             for clip in all_file_clips:
                 try:
@@ -414,7 +449,6 @@ class UnusedMediaCleanerGUI:
                     continue
                 final_candidates.append(clip)
 
-            # determine unused & missing
             unused_clips = []
             missing_clips = []
             for clip in final_candidates:
@@ -447,7 +481,7 @@ class UnusedMediaCleanerGUI:
                 self.scan_button.config(state="normal")
                 return
 
-            action_label = "Move to folder" if self.action_var.get() == 1 else "Delete to Recycle Bin"
+            action_label = "Move to folder" if self.action_var.get() == 1 else f"Delete to {TRASH_NAME}"
             proceed = messagebox.askyesno("Confirm Clean",
                                           f"{action_label} {len(unused_clips)} unused files and remove {len(missing_clips)} missing clips. Proceed?")
             if not proceed:
@@ -486,11 +520,12 @@ class UnusedMediaCleanerGUI:
                         shutil.move(path, os.path.join(dest_dir, os.path.basename(path)))
                         self.log(f"MOVED: {path} -> {dest_dir}")
                     else:
-                        ok, err = move_to_recycle_bin_win(path)
+                        # Unified trash function call here
+                        ok, err = send_to_trash(path)
                         if ok:
-                            self.log(f"DELETED: {path} to Recycle Bin")
+                            self.log(f"DELETED: {path} to {TRASH_NAME}")
                         else:
-                            self.log(f"ERROR: Recycle Bin failed for {path}: {err}")
+                            self.log(f"ERROR: {TRASH_NAME} failed for {path}: {err}")
                             errors += 1
                             continue
 
@@ -516,7 +551,6 @@ class UnusedMediaCleanerGUI:
                     self.log(f"ERROR: Removing offline clip {path}: {e}")
                     errors += 1
 
-            # summary
             self.log("\n=== SUMMARY ===")
             self.log(f"Video files: {summary['video']}")
             self.log(f"Audio files: {summary['audio']}")
@@ -530,26 +564,53 @@ class UnusedMediaCleanerGUI:
         self.scan_button.config(state="normal")
 
     def check_for_updates(self):
-        # Popups for user feedback; not writing log messages here except minimal
         try:
-            with urllib.request.urlopen(GITHUB_API_LATEST, timeout=10) as resp:
+            # Attempt to connect normally first
+            ctx = ssl.create_default_context()
+            with urllib.request.urlopen(GITHUB_API_LATEST, timeout=10, context=ctx) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.URLError as e:
+            # If macOS SSL certs are missing, fallback to unverified context
+            if "CERTIFICATE_VERIFY_FAILED" in str(e):
+                try:
+                    ctx = ssl._create_unverified_context()
+                    with urllib.request.urlopen(GITHUB_API_LATEST, timeout=10, context=ctx) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                except Exception as inner_e:
+                    messagebox.showwarning("Update Check Failed", f"Could not check for updates: {inner_e}")
+                    return
+            else:
+                messagebox.showwarning("Update Check Failed", f"Could not check for updates: {e}")
+                return
         except Exception as e:
             messagebox.showwarning("Update Check Failed", f"Could not check for updates: {e}")
             return
 
         latest_tag = (data.get("tag_name") or "").lstrip("v").strip()
         assets = data.get("assets", []) or []
-        # choose first zip that matches script-only naming (skip python bundles)
         download_asset = None
         for a in assets:
             name = (a.get("name") or "").lower()
             url = a.get("browser_download_url")
+            
             if not name or not url:
                 continue
-            if name.endswith(".zip") and "python" not in name and "drmediacleaner" in name:
-                download_asset = (name, url)
-                break
+                
+            # Filter out anything that isn't our core zip files
+            if not (name.endswith(".zip") and "python" not in name and "drmediacleaner" in name):
+                continue
+                
+            # OS-Specific Logic based on your file naming convention
+            if IS_MAC:
+                # Mac users ONLY download the file with "macOS" in the name
+                if "macOS" in name:
+                    download_asset = (name, url)
+                    break
+            elif IS_WINDOWS:
+                # Windows users ONLY download the file WITHOUT "macOS" in the name
+                if "macOS" not in name:
+                    download_asset = (name, url)
+                    break
 
         if not latest_tag:
             messagebox.showwarning("Update Check", "Could not determine latest release info.")
@@ -564,7 +625,6 @@ class UnusedMediaCleanerGUI:
                 messagebox.showinfo("Up to Date", f"You are running the latest version ({APP_VERSION}).")
                 return
         except Exception:
-            # fallback compare as strings
             if latest_tag <= APP_VERSION:
                 messagebox.showinfo("Up to Date", f"You are running the latest version ({APP_VERSION}).")
                 return
@@ -581,7 +641,20 @@ class UnusedMediaCleanerGUI:
             downloads = os.path.join(os.path.expanduser("~"), "Downloads")
             os.makedirs(downloads, exist_ok=True)
             dst = os.path.join(downloads, os.path.basename(url))
-            urllib.request.urlretrieve(url, dst)
+            
+            # Using urlopen + shutil instead of urlretrieve to handle SSL contexts properly
+            try:
+                download_ctx = ssl.create_default_context()
+                with urllib.request.urlopen(url, context=download_ctx) as response, open(dst, 'wb') as out_file:
+                    shutil.copyfileobj(response, out_file)
+            except urllib.error.URLError as e:
+                if "CERTIFICATE_VERIFY_FAILED" in str(e):
+                    download_ctx = ssl._create_unverified_context()
+                    with urllib.request.urlopen(url, context=download_ctx) as response, open(dst, 'wb') as out_file:
+                        shutil.copyfileobj(response, out_file)
+                else:
+                    raise e
+                    
             messagebox.showinfo("Downloaded", f"Update downloaded to:\n{dst}")
         except Exception as e:
             messagebox.showerror("Download Failed", f"Failed to download update: {e}")
@@ -591,5 +664,22 @@ if __name__ == "__main__":
     root = Tk()
     app = UnusedMediaCleanerGUI(root)
     app._toggle_folder_entry()
-    root.mainloop()
+    
+    # --- Force window to the front ---
+    root.lift()
+    root.attributes('-topmost', True)
+    root.focus_force()
+    
+    # Remove the 'always on top' lock after 500ms so the user 
+    # can still click back to Resolve without the script blocking the view
+    root.after(500, lambda: root.attributes('-topmost', False))
 
+    # macOS specific failsafe: forcefully tell the OS to bring the underlying process to the front
+    if IS_MAC:
+        try:
+            os.system(f'''/usr/bin/osascript -e 'tell app "System Events" to set frontmost of the first process whose unix id is {os.getpid()} to true' ''')
+        except Exception:
+            pass
+    # ---------------------------------
+
+    root.mainloop()

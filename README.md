@@ -2,8 +2,11 @@ DaVinci Resolve Unused Media Cleaner
 ====================================
 
 Version: 2.0
+
 Author: Grooveland Designs
+
 Website: https://www.groovelanddesigns.co.uk
+
 Enjoying the plugin? Support our work with a coffee ☕ → https://buymeacoffee.com/groovelanddesigns
 
 -----
@@ -74,7 +77,7 @@ Installation
 2. The installer will copy the script to the DaVinci Resolve Scripts folder.
 
 --- For macOS Users ---
-1. Run the `DRMediaCleaner-macOS.pkg` installer. It will automatically place the script into the correct Resolve Utility folder.
+1. Run the `DRMediaCleaner_v2.0.pkg` installer. It will automatically place the script into the correct Resolve Utility folder.
 2. Download and install Python 3 from the official website: https://www.python.org/downloads/macos/
 3. IMPORTANT: Once installed, open your Mac's "Applications > Python 3.x" folder and double-click the "Install Certificates.command" file. (This allows the script's Auto-Updater to work).
 

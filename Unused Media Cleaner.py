@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
 """
 DaVinci Resolve Unused Media Cleaner (Cross-Platform: Windows & macOS, no external deps)
-Version 2.0
+Version 2.1.0
 - Scans timelines to find used file paths
 - Compares against Media Pool to find unused clips
-- Option to Move unused files to named folder OR send to Trash/Recycle Bin natively
+- 3 distinct actions: Delete to Trash, Move to Subfolder, Move to Custom Folder
 - Removes corresponding clips from Media Pool; also removes missing/offline clips
 - Dry Run mode (no changes)
 - Checks scripting preferences before connecting
 - Lets user select which file types to process (video/audio/images/other)
 - Usage-based protection for compound contents
-- Option to check for updates and download new version (.zip) automatically 
+- Option to check for updates and download new version (.zip) automatically
+- Explicit button to save user preferences across sessions natively
+- Releases Resolve file locks prior to moving files on disk
+- Optimized Tkinter variable binding and instant-close process termination
 """
 
 import os
@@ -22,31 +25,37 @@ import urllib.request
 import urllib.error
 import json
 import ssl
+import webbrowser
 import tkinter as tk
 from tkinter import (
     Tk, Button, Checkbutton, IntVar, Text, Scrollbar, END,
-    Label, Entry, messagebox, Radiobutton, DISABLED, NORMAL
+    Label, Entry, messagebox, Radiobutton, DISABLED, NORMAL,
+    filedialog
 )
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 GITHUB_API_LATEST = "https://api.github.com/repos/groovelanddesigns/davinciresolveunusedmediacleaner/releases/latest"
 
-# OS Detection
+# OS Detection & Dynamic Paths
 IS_WINDOWS = sys.platform.startswith('win')
 IS_MAC = sys.platform.startswith('darwin')
 
-# Dynamic UI & Paths based on OS
 if IS_WINDOWS:
     TRASH_NAME = "Recycle Bin"
     RESOLVE_MODULE_PATH = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules"
+    config_dir = os.environ.get("APPDATA", os.path.expanduser("~"))
+    PREFS_FILE = os.path.join(config_dir, "DRMediaCleaner", "prefs.json")
     import ctypes
     from ctypes.wintypes import HWND, LPCWSTR, UINT
 elif IS_MAC:
     TRASH_NAME = "Trash"
     RESOLVE_MODULE_PATH = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting/Modules"
+    config_dir = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    PREFS_FILE = os.path.join(config_dir, "DRMediaCleaner", "prefs.json")
 else:
     TRASH_NAME = "Trash"
-    RESOLVE_MODULE_PATH = "" # Linux fallback if needed
+    RESOLVE_MODULE_PATH = "" 
+    PREFS_FILE = os.path.join(os.path.expanduser("~"), ".drmediacleaner_prefs.json")
 
 if RESOLVE_MODULE_PATH and RESOLVE_MODULE_PATH not in sys.path and os.path.isdir(RESOLVE_MODULE_PATH):
     sys.path.append(RESOLVE_MODULE_PATH)
@@ -106,7 +115,6 @@ def move_to_trash_mac(path: str) -> tuple[bool, str]:
         return False, str(e)
 
 def send_to_trash(path: str) -> tuple[bool, str]:
-    """Router function to send to the correct native trash."""
     if IS_WINDOWS:
         return move_to_recycle_bin_win(path)
     elif IS_MAC:
@@ -122,33 +130,50 @@ class UnusedMediaCleanerGUI:
         self.root = root
         self.root.title("DaVinci Resolve Unused Media Cleaner")
         self.root.geometry("980x780")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # Options
-        self.dry_run_var = IntVar(value=0)
-        self.action_var = IntVar(value=2)  # 1=Move, 2=Trash
+        self.dry_run_var = IntVar(self.root, value=0)
+        self.action_var = IntVar(self.root, value=2) # 2=Trash, 1=Subfolder, 3=Custom Folder
 
         Label(root, text="Options:").pack(anchor='w', padx=10, pady=(10, 5))
         Checkbutton(root, text="Dry Run (no move/delete or Media Pool removal)", variable=self.dry_run_var)\
             .pack(anchor='w', padx=20)
 
         Label(root, text="Action for unused media:").pack(anchor='w', padx=10, pady=(12, 0))
-        Radiobutton(root, text="Move to folder", variable=self.action_var, value=1,
-                    command=self._toggle_folder_entry).pack(anchor='w', padx=20)
+        
+        # Option 1: Delete
         Radiobutton(root, text=f"Delete to {TRASH_NAME}", variable=self.action_var, value=2,
                     command=self._toggle_folder_entry).pack(anchor='w', padx=20)
-
-        row = tk.Frame(root)
-        row.pack(anchor='w', padx=10, pady=(10, 5), fill='x')
-        Label(row, text="Folder name for moved files:").pack(side='left')
-        self.unused_folder_entry = Entry(row, width=30)
-        self.unused_folder_entry.insert(0, "Unused")
-        self.unused_folder_entry.pack(side='left', padx=6)
+        
+        # Option 2: Subfolder
+        Radiobutton(root, text="Move to a subfolder (relative to original file)", variable=self.action_var, value=1,
+                    command=self._toggle_folder_entry).pack(anchor='w', padx=20)
+        
+        frame_sub = tk.Frame(root)
+        frame_sub.pack(anchor='w', padx=45, pady=(0, 5), fill='x')
+        Label(frame_sub, text="Subfolder name:").pack(side='left')
+        self.subfolder_entry = Entry(frame_sub, width=30)
+        self.subfolder_entry.insert(0, "Unused")
+        self.subfolder_entry.pack(side='left', padx=6)
+        
+        # Option 3: Custom Folder
+        Radiobutton(root, text="Move to a Custom Folder (absolute path)", variable=self.action_var, value=3,
+                    command=self._toggle_folder_entry).pack(anchor='w', padx=20)
+        
+        frame_custom = tk.Frame(root)
+        frame_custom.pack(anchor='w', padx=45, pady=(0, 5), fill='x')
+        Label(frame_custom, text="Folder path:").pack(side='left')
+        self.custom_folder_entry = Entry(frame_custom, width=40)
+        self.custom_folder_entry.pack(side='left', padx=6)
+        self.browse_btn = Button(frame_custom, text="Browse...", command=self.browse_folder)
+        self.browse_btn.pack(side='left')
 
         Label(root, text="File types to process:").pack(anchor='w', padx=10, pady=(12, 0))
-        self.include_video = IntVar(value=1)
-        self.include_audio = IntVar(value=1)
-        self.include_images = IntVar(value=1)
-        self.include_other = IntVar(value=1)
+        self.include_video = IntVar(self.root, value=1)
+        self.include_audio = IntVar(self.root, value=1)
+        self.include_images = IntVar(self.root, value=1)
+        self.include_other = IntVar(self.root, value=1)
         Checkbutton(root, text="Video files", variable=self.include_video).pack(anchor='w', padx=20)
         Checkbutton(root, text="Audio files", variable=self.include_audio).pack(anchor='w', padx=20)
         Checkbutton(root, text="Graphics / Images", variable=self.include_images).pack(anchor='w', padx=20)
@@ -157,32 +182,113 @@ class UnusedMediaCleanerGUI:
         self.scan_button = Button(root, text="Scan & Clean Unused Media", command=self.start_scan, height=2)
         self.scan_button.pack(pady=12)
 
-        # Log area (expandable)
         self.log_text = Text(root, wrap='word', height=8)
         self.log_text.pack(fill='both', expand=True, padx=10, pady=(0, 8))
         scrollbar = Scrollbar(root, command=self.log_text.yview)
         scrollbar.pack(side='right', fill='y')
         self.log_text.config(yscrollcommand=scrollbar.set)
 
-        # Footer fixed at bottom (always visible)
+        # Footer
         footer = tk.Frame(root)
         footer.pack(side='bottom', fill='x', padx=10, pady=8)
         Button(footer, text="Check for Updates", command=self.check_for_updates).pack(side='left')
+        Button(footer, text="Save Current Settings", command=self.save_settings).pack(side='left', padx=10)
         
-        # version label bottom-right
         ver_label = Label(footer, text=f"v{APP_VERSION}", anchor='e', fg='gray')
         ver_label.pack(side='right')
+        
+        coffee_link = Label(footer, text='☕Support this project', fg='gray', cursor='hand2')
+        coffee_link.pack(side='right', padx=15)
+        coffee_link.bind("<Button-1>", lambda e: webbrowser.open_new("https://buymeacoffee.com/groovelanddesigns"))
 
-        # Resolve handles
         self.resolve = None
         self.project = None
         self.media_pool = None
 
+        self.load_settings()
+
+    def on_closing(self):
+        # Drop the API variables to release Resolve's memory hooks and forcefully exit
+        self.resolve = None
+        self.project = None
+        self.media_pool = None
+        self.root.destroy()
+        os._exit(0)
+
+    def browse_folder(self):
+        d = filedialog.askdirectory(title="Select Destination Folder")
+        if d:
+            self.action_var.set(3)
+            self._toggle_folder_entry()
+            self.custom_folder_entry.delete(0, END)
+            self.custom_folder_entry.insert(0, os.path.normpath(d))
+
+    def load_settings(self):
+        if os.path.exists(PREFS_FILE):
+            try:
+                with open(PREFS_FILE, 'r') as f:
+                    prefs = json.load(f)
+                if "dry_run" in prefs: self.dry_run_var.set(prefs["dry_run"])
+                if "action" in prefs: self.action_var.set(prefs["action"])
+                
+                # Graceful migration from old v2.0 setting schema
+                if "folder_name" in prefs and "subfolder_name" not in prefs:
+                    if os.path.isabs(prefs["folder_name"]):
+                        self.custom_folder_entry.delete(0, END)
+                        self.custom_folder_entry.insert(0, prefs["folder_name"])
+                    else:
+                        self.subfolder_entry.delete(0, END)
+                        self.subfolder_entry.insert(0, prefs["folder_name"])
+                
+                if "subfolder_name" in prefs:
+                    self.subfolder_entry.delete(0, END)
+                    self.subfolder_entry.insert(0, prefs["subfolder_name"])
+                if "custom_folder_path" in prefs:
+                    self.custom_folder_entry.delete(0, END)
+                    self.custom_folder_entry.insert(0, prefs["custom_folder_path"])
+                    
+                if "inc_video" in prefs: self.include_video.set(prefs["inc_video"])
+                if "inc_audio" in prefs: self.include_audio.set(prefs["inc_audio"])
+                if "inc_images" in prefs: self.include_images.set(prefs["inc_images"])
+                if "inc_other" in prefs: self.include_other.set(prefs["inc_other"])
+                self._toggle_folder_entry()
+            except Exception as e:
+                self.log(f"WARNING: Could not load preferences ({e})")
+
+    def save_settings(self):
+        prefs = {
+            "dry_run": self.dry_run_var.get(),
+            "action": self.action_var.get(),
+            "subfolder_name": self.subfolder_entry.get().strip(),
+            "custom_folder_path": self.custom_folder_entry.get().strip(),
+            "inc_video": self.include_video.get(),
+            "inc_audio": self.include_audio.get(),
+            "inc_images": self.include_images.get(),
+            "inc_other": self.include_other.get()
+        }
+        try:
+            os.makedirs(os.path.dirname(PREFS_FILE), exist_ok=True)
+            with open(PREFS_FILE, 'w') as f:
+                json.dump(prefs, f)
+            messagebox.showinfo("Settings Saved", "Your current configuration has been saved as the default for future sessions.")
+        except Exception as e:
+            self.log(f"WARNING: Could not save preferences ({e})")
+            messagebox.showwarning("Save Failed", f"Could not save preferences to:\n{PREFS_FILE}\n\nError: {e}")
+
     def _toggle_folder_entry(self):
-        if self.action_var.get() == 2:
-            self.unused_folder_entry.config(state=DISABLED)
-        else:
-            self.unused_folder_entry.config(state=NORMAL)
+        val = self.action_var.get()
+        if val == 2:
+            self.subfolder_entry.config(state=DISABLED)
+            self.custom_folder_entry.config(state=DISABLED)
+            self.browse_btn.config(state=DISABLED)
+        elif val == 1:
+            self.subfolder_entry.config(state=NORMAL)
+            self.custom_folder_entry.config(state=DISABLED)
+            self.browse_btn.config(state=DISABLED)
+        elif val == 3:
+            self.subfolder_entry.config(state=DISABLED)
+            self.custom_folder_entry.config(state=NORMAL)
+            self.browse_btn.config(state=NORMAL)
 
     def log(self, msg: str):
         self.log_text.insert(END, msg + "\n")
@@ -325,13 +431,48 @@ class UnusedMediaCleanerGUI:
                 pass
         return None
 
+    def _classify_clip(self, clip) -> str:
+        video_exts = {'.mp4', '.mov', '.mxf', '.avi', '.mkv', '.braw', '.r3d', '.crm', '.dng', '.mts', '.m2ts'}
+        audio_exts = {'.wav', '.mp3', '.aac', '.aif', '.aiff', '.m4a', '.flac', '.ogg', '.wma'}
+        image_exts = {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.psd', '.exr', '.svg', '.bmp'}
+
+        try:
+            ctype = (clip.GetClipProperty("Type") or "").lower()
+        except Exception:
+            ctype = ""
+
+        try:
+            fp = clip.GetClipProperty("File Path") or ""
+            ext = os.path.splitext(fp)[1].lower()
+        except Exception:
+            ext = ""
+
+        if "video" in ctype or "movie" in ctype or ext in video_exts:
+            return "video"
+        if "audio" in ctype or ext in audio_exts:
+            return "audio"
+        if any(x in ctype for x in ("still", "image")) or ext in image_exts:
+            return "image"
+        
+        return "other"
+
     def scan_and_clean(self):
         try:
-            folder_name = self.unused_folder_entry.get().strip()
-            if self.action_var.get() == 1 and not folder_name:
-                self.log("WARNING: Unused folder name cannot be empty.")
-                self.scan_button.config(state="normal")
-                return
+            action_val = self.action_var.get()
+            folder_name = ""
+            
+            if action_val == 1:
+                folder_name = self.subfolder_entry.get().strip()
+                if not folder_name:
+                    self.log("WARNING: Subfolder name cannot be empty.")
+                    self.scan_button.config(state="normal")
+                    return
+            elif action_val == 3:
+                folder_name = self.custom_folder_entry.get().strip()
+                if not folder_name or not os.path.isabs(folder_name):
+                    self.log("WARNING: Custom folder must be a valid absolute path.")
+                    self.scan_button.config(state="normal")
+                    return
 
             self.log("INFO: Checking DaVinci Resolve scripting preferences...")
             self.resolve = DaVinciResolveScript.scriptapp("Resolve")
@@ -431,21 +572,14 @@ class UnusedMediaCleanerGUI:
 
             final_candidates = []
             for clip in all_file_clips:
-                try:
-                    ctype = (clip.GetClipProperty("Type") or "").lower()
-                except Exception:
-                    ctype = ""
-                is_video = "video" in ctype
-                is_audio = "audio" in ctype
-                is_image = ctype in ("still", "image")
-                is_other = not (is_video or is_audio or is_image)
-                if is_video and not self.include_video.get():
+                category = self._classify_clip(clip)
+                if category == "video" and not self.include_video.get():
                     continue
-                if is_audio and not self.include_audio.get():
+                if category == "audio" and not self.include_audio.get():
                     continue
-                if is_image and not self.include_images.get():
+                if category == "image" and not self.include_images.get():
                     continue
-                if is_other and not self.include_other.get():
+                if category == "other" and not self.include_other.get():
                     continue
                 final_candidates.append(clip)
 
@@ -480,8 +614,11 @@ class UnusedMediaCleanerGUI:
                 self.log("INFO: Dry Run - no changes will be made.")
                 self.scan_button.config(state="normal")
                 return
+            
+            if action_val == 1: action_label = "Move to relative subfolder"
+            elif action_val == 3: action_label = "Move to custom absolute folder"
+            else: action_label = f"Delete to {TRASH_NAME}"
 
-            action_label = "Move to folder" if self.action_var.get() == 1 else f"Delete to {TRASH_NAME}"
             proceed = messagebox.askyesno("Confirm Clean",
                                           f"{action_label} {len(unused_clips)} unused files and remove {len(missing_clips)} missing clips. Proceed?")
             if not proceed:
@@ -492,35 +629,47 @@ class UnusedMediaCleanerGUI:
             moved_or_deleted = 0
             removed_from_pool = 0
             errors = 0
-            summary = {"video":0, "audio":0, "image":0, "other":0}
+            summary = {"video": 0, "audio": 0, "image": 0, "other": 0}
 
             for clip, path in unused_clips:
                 if not os.path.exists(path):
                     self.log(f"WARNING: File not found (skipping): {path}")
                     errors += 1
                     continue
-                try:
-                    ctype = (clip.GetClipProperty("Type") or "").lower()
-                except Exception:
-                    ctype = ""
-                if "video" in ctype:
-                    summary["video"] += 1
-                elif "audio" in ctype:
-                    summary["audio"] += 1
-                elif ctype in ("still", "image"):
-                    summary["image"] += 1
-                else:
-                    summary["other"] += 1
+
+                category = self._classify_clip(clip)
+                summary[category] = summary.get(category, 0) + 1
 
                 try:
-                    if self.action_var.get() == 1:
-                        parent = os.path.dirname(path)
-                        dest_dir = os.path.join(parent, folder_name)
+                    # 1. REMOVE FROM MEDIA POOL FIRST to release Resolve's file locks
+                    try:
+                        if self.media_pool.DeleteClips([clip]):
+                            removed_from_pool += 1
+                    except Exception:
+                        pass
+
+                    # 2. THEN MOVE OR TRASH THE FILE on the OS level
+                    if action_val in (1, 3):
+                        if action_val == 3:
+                            dest_dir = folder_name
+                        else:
+                            parent = os.path.dirname(path)
+                            dest_dir = os.path.join(parent, folder_name)
+                        
                         os.makedirs(dest_dir, exist_ok=True)
-                        shutil.move(path, os.path.join(dest_dir, os.path.basename(path)))
-                        self.log(f"MOVED: {path} -> {dest_dir}")
+                        base_name = os.path.basename(path)
+                        dest_path = os.path.join(dest_dir, base_name)
+                        
+                        if os.path.exists(dest_path) and os.path.normpath(path) != os.path.normpath(dest_path):
+                            name, ext = os.path.splitext(base_name)
+                            counter = 1
+                            while os.path.exists(dest_path):
+                                dest_path = os.path.join(dest_dir, f"{name}_{counter}{ext}")
+                                counter += 1
+                        
+                        shutil.move(path, dest_path)
+                        self.log(f"MOVED: {path} -> {dest_path}")
                     else:
-                        # Unified trash function call here
                         ok, err = send_to_trash(path)
                         if ok:
                             self.log(f"DELETED: {path} to {TRASH_NAME}")
@@ -530,11 +679,7 @@ class UnusedMediaCleanerGUI:
                             continue
 
                     moved_or_deleted += 1
-                    try:
-                        if self.media_pool.DeleteClips([clip]):
-                            removed_from_pool += 1
-                    except Exception:
-                        pass
+
                 except Exception as e:
                     self.log(f"ERROR: Processing {path}: {e}")
                     errors += 1
@@ -565,12 +710,10 @@ class UnusedMediaCleanerGUI:
 
     def check_for_updates(self):
         try:
-            # Attempt to connect normally first
             ctx = ssl.create_default_context()
             with urllib.request.urlopen(GITHUB_API_LATEST, timeout=10, context=ctx) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.URLError as e:
-            # If macOS SSL certs are missing, fallback to unverified context
             if "CERTIFICATE_VERIFY_FAILED" in str(e):
                 try:
                     ctx = ssl._create_unverified_context()
@@ -596,19 +739,15 @@ class UnusedMediaCleanerGUI:
             if not name or not url:
                 continue
                 
-            # Filter out anything that isn't our core zip files
             if not (name.endswith(".zip") and "python" not in name and "drmediacleaner" in name):
                 continue
                 
-            # OS-Specific Logic based on your file naming convention
             if IS_MAC:
-                # Mac users ONLY download the file with "macOS" in the name
-                if "macOS" in name:
+                if "macos" in name:
                     download_asset = (name, url)
                     break
             elif IS_WINDOWS:
-                # Windows users ONLY download the file WITHOUT "macOS" in the name
-                if "macOS" not in name:
+                if "macos" not in name:
                     download_asset = (name, url)
                     break
 
@@ -642,7 +781,6 @@ class UnusedMediaCleanerGUI:
             os.makedirs(downloads, exist_ok=True)
             dst = os.path.join(downloads, os.path.basename(url))
             
-            # Using urlopen + shutil instead of urlretrieve to handle SSL contexts properly
             try:
                 download_ctx = ssl.create_default_context()
                 with urllib.request.urlopen(url, context=download_ctx) as response, open(dst, 'wb') as out_file:
@@ -665,21 +803,16 @@ if __name__ == "__main__":
     app = UnusedMediaCleanerGUI(root)
     app._toggle_folder_entry()
     
-    # --- Force window to the front ---
     root.lift()
     root.attributes('-topmost', True)
     root.focus_force()
     
-    # Remove the 'always on top' lock after 500ms so the user 
-    # can still click back to Resolve without the script blocking the view
     root.after(500, lambda: root.attributes('-topmost', False))
 
-    # macOS specific failsafe: forcefully tell the OS to bring the underlying process to the front
     if IS_MAC:
         try:
             os.system(f'''/usr/bin/osascript -e 'tell app "System Events" to set frontmost of the first process whose unix id is {os.getpid()} to true' ''')
         except Exception:
             pass
-    # ---------------------------------
 
     root.mainloop()

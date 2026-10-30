@@ -1,7 +1,7 @@
 DaVinci Resolve Unused Media Cleaner
 ====================================
 
-Version: 2.0
+Version: 2.1
 
 Author: Grooveland Designs
 
@@ -12,6 +12,12 @@ Enjoying the plugin? Support our work with a coffee ☕ → https://buymeacoffee
 -----
 Changelog
 -----
+
+v2.1
+
+- FIX: Fixed a bug where certain video clips were not processed unless the "Audio files" option was also selected.
+- NEW: Redesigned Action options with 3 distinct choices: Delete to Trash/Recycle Bin, Move to a subfolder, or Move to a custom folder (with a new "Browse..." button).
+- NEW: Added a "Save Current Settings" button to natively remember your tool preferences across sessions.
 
 v2.0
 - NEW: Full cross-platform support! The script now runs natively on both macOS and Windows.
@@ -40,7 +46,7 @@ v1.0
 Description
 -----
 
-This tool cleans up your DaVinci Resolve projects by identifying unused media clips and optionally either moving them to a dedicated folder or sending them directly to your system's Trash (macOS) or Recycle Bin (Windows). It also removes missing/offline clips from the Media Pool and provides a detailed summary of processed files by type (video, audio, image, other).
+This tool cleans up your DaVinci Resolve projects by identifying unused media clips and optionally moving them to a subfolder, a custom folder, or sending them directly to your system's Trash (macOS) or Recycle Bin (Windows). It also removes missing/offline clips from the Media Pool and provides a detailed summary of processed files by type (video, audio, image, other).
 
 Note: Works only with DaVinci Resolve Studio (paid version).
 
@@ -51,10 +57,12 @@ Key Features
 - Scans all timelines to detect used clips
 - Identifies and removes unused media from the Media Pool
 - Option to:
-  * Move unused clips to a designated folder
-  * Send unused clips to the native macOS Trash or Windows Recycle Bin
+  * Delete unused clips to the native macOS Trash or Windows Recycle Bin
+  * Move unused clips to a subfolder
+  * Move unused clips to a custom folder   
 - Protects all files nested within Compound, Fusion or Multicam clips
 - Removes missing/offline clips from the Media Pool
+- Save your interface settings and preferences across sessions
 - Dry Run mode for safe previews before cleanup
 - Provides a detailed summary by file type
 
@@ -63,7 +71,7 @@ System Requirements
 -----
 
 - OS: Windows 10 (or later) OR macOS 12 (or later)
-- Resolve: DaVinci Resolve Studio (tested with versions 18, 19, and 20)
+- Resolve: DaVinci Resolve Studio (tested with versions 18, 19, and 20, 21)
 - Python: Python 3.8 or newer 
   * Windows users: Can use the bundled Python installer version.
   * macOS users: Requires official installation from python.org.
@@ -77,7 +85,7 @@ Installation
 2. The installer will copy the script to the DaVinci Resolve Scripts folder.
 
 --- For macOS Users ---
-1. Run the `DRMediaCleaner_v2.0.pkg` installer. It will automatically place the script into the correct Resolve Utility folder.
+1. Run the `DRMediaCleaner-macOS.pkg` installer. It will automatically place the script into the correct Resolve Utility folder.
 2. Download and install Python 3 from the official website: https://www.python.org/downloads/macos/
 3. IMPORTANT: Once installed, open your Mac's "Applications > Python 3.x" folder and double-click the "Install Certificates.command" file. (This allows the script's Auto-Updater to work).
 
@@ -94,7 +102,7 @@ Usage
 2. Go to the top menu bar: Workspace -> Scripts -> Utility -> Unused Media Cleaner.
 3. Choose your options:
    - Dry Run (Highly recommended for first-time use to see what will happen)
-   - Action: Move unused clips to a folder OR Delete to Trash/Recycle Bin
+   - Action: Delete to Trash/Recycle Bin, Move to a subfolder, or Move to a custom folder
    - Select which file types to process (video, audio, images, other)
 4. Click "Scan & Clean Unused Media" to start.
 5. After processing, review the summary and results in the log window.
